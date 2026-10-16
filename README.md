@@ -91,16 +91,16 @@ All clients also share one third of the `Normal` traffic. Each client simulates 
 
 ```mermaid
 flowchart TB
-    subgraph R1["Round 1 · Client 2"]
-        direction LR
-        A["Local unlearning<br/>distillation + uniform target + EWC"] --> D["Forgetting direction u<br/>(gradient ascent on Generic)"]
-    end
-    D -- "broadcast over MQTT<br/>(retain = True)" --> L1
-    subgraph RN["Every following round"]
-        direction LR
-        L1["🧲 Layer 1 · Clients<br/>alignment penalty"] --> L2["🧹 Layer 2 · Server<br/>projection filtering"] --> L3["🔒 Layer 3 · Server<br/>output-neuron lock"]
-    end
-    L3 --> G["✅ Global model<br/>Generic forgotten"]
+    A["① Round 1 · Client 2<br/>Local unlearning: distillation + uniform target + EWC"]
+    D["② Round 1 · Client 2<br/>Forgetting direction u (gradient ascent on Generic)"]
+    L1["🧲 Layer 1 · every client<br/>Alignment penalty against u"]
+    L2["🧹 Layer 2 · server<br/>Projection filtering before FedAvg"]
+    L3["🔒 Layer 3 · server<br/>Lock of the Generic output neuron"]
+    G["✅ Global model: Generic forgotten"]
+    A --> D
+    D -- "broadcast over MQTT (retain = True)" --> L1
+    L1 --> L2 --> L3 --> G
+    L3 -. "every following round" .-> L1
 ```
 
 ### Round 1: local unlearning on Client 2
