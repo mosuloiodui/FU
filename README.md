@@ -16,78 +16,75 @@
 
 ---
 
-## ✨ Highlights
+## 📊 Results
 
-| | |
-|---|---|
-| 🎯 **Complete forgetting** | The `Generic` attack class drops to **F1 = 0.000** on all 3 clients at the same time, and stays there on every following round |
-| 🛡️ **Knowledge preserved** | Macro F1 on the 9 retained classes changes by **at most −0.018** |
-| ⚡ **Fast** | Forgetting is reached in **fewer than 10 rounds**, compared with more than 300 rounds of initial federated training |
-| 🔁 **No re-learning** | Three protection layers stop the other clients from rebuilding the forgotten class |
-| 💾 **No data purge** | No local data has to be deleted on any client |
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/results_dark.png">
+  <img alt="Bar charts per client: Generic F1 drops to 0.000 after FedAF-P, while Normal F1 and the macro F1 of the 9 retained classes barely change" src="assets/results_light.png">
+</picture>
 
----
+FL results after more than 300 rounds, then FedAF-P after fewer than 10 rounds (α = 0.30). Each client is evaluated on its own local test set.
 
-## 📌 Table of Contents
+| Client | Generic F1<br/>before → after | Normal F1<br/>before → after | Macro F1, 9 retained classes<br/>before → after | Accuracy<br/>before → after |
+|---|---|---|---|---|
+| **Client 1** | 0.773 → **0.000** ✅ | 0.720 → 0.717 | 0.294 → 0.277 | 0.569 → 0.421 |
+| **Client 2** | 0.745 → **0.000** ✅ | 0.809 → 0.805 | 0.136 → 0.135 | 0.514 → 0.376 |
+| **Client 3** | 0.648 → **0.000** ✅ | 0.758 → 0.761 | 0.199 → 0.192 | 0.488 → 0.382 |
 
-- [The problem](#-the-problem)
-- [Federated setup](#-federated-setup)
-- [FedAF-P: three layers of protection](#%EF%B8%8F-fedaf-p-three-layers-of-protection)
-- [Results](#-results)
-- [Dataset](#%EF%B8%8F-dataset)
-- [Repository structure](#-repository-structure)
-- [Getting started](#-getting-started)
-- [Open issues & roadmap](#%EF%B8%8F-open-issues--roadmap)
-- [References](#-references)
+### How to read these results
 
----
+- ✅ **Forgetting is complete and persistent.** `Generic` precision, recall and F1 are all 0.000 on the 3 clients, on every round after unlearning.
+- ✅ **Retained knowledge is almost intact.** On the 9 other classes, macro F1 moves by −0.002 to −0.018, and `Normal` stays stable (F1 ≈ 0.72–0.81).
+- ℹ️ **The accuracy drop is expected.** `Generic` samples, which the model is now designed not to recognise, are counted as errors in the test sets.
+- ℹ️ **Client 2's overall macro F1 drops from 0.197 to 0.121** because `Generic` made up 66% of its local data. Excluding the forgotten class, its macro F1 is unchanged (0.136 → 0.135).
+- ⚠️ **Rare classes** (Analysis, Backdoor, Worms, Shellcode: under 1% of the data) stay close to zero both before and after. This is a pre-existing data-distribution problem, independent of unlearning.
 
-## 🎯 The problem
+### F1-score per class
 
-In **Federated Learning (FL)**, IoT clients train a shared intrusion-detection model without sharing their raw traffic. When a client asks for its data to be forgotten (GDPR *right to be forgotten*, poisoned data, a client leaving), retraining the global model from scratch is too expensive. **Federated Unlearning** removes that knowledge from the trained model instead.
+| Class | Client 1<br/>before → after | Client 2<br/>before → after | Client 3<br/>before → after |
+|---|---|---|---|
+| Analysis | 0.000 → 0.000 | 0.000 → 0.000 | 0.055 → 0.040 |
+| Backdoor | 0.000 → 0.000 | 0.039 → 0.040 | 0.000 → 0.000 |
+| DoS | 0.278 → 0.254 | 0.015 → 0.014 | 0.012 → 0.015 |
+| Exploits | 0.507 → 0.495 | 0.335 → 0.342 | 0.570 → 0.580 |
+| Fuzzers | 0.337 → 0.235 | 0.009 → 0.003 | 0.189 → 0.192 |
+| **Generic** 🎯 | 0.773 → **0.000** ✅ | 0.745 → **0.000** ✅ | 0.648 → **0.000** ✅ |
+| Normal | 0.720 → 0.717 | 0.809 → 0.805 | 0.758 → 0.761 |
+| Reconnaissance | 0.490 → 0.488 | 0.010 → 0.002 | 0.128 → 0.087 |
+| Shellcode | 0.151 → 0.152 | 0.000 → 0.000 | 0.047 → 0.049 |
+| Worms | 0.164 → 0.147 | 0.010 → 0.009 | 0.035 → 0.000 |
+| **Macro F1** | 0.342 → 0.249 | 0.197 → 0.121 | 0.244 → 0.172 |
 
-Here, **Client 2 holds 100% of the `Generic` attack samples** and asks the federation to forget that class.
+### Precision and recall after unlearning
 
-### Why local unlearning alone fails
+These per-class details come from each client's local test set after FedAF-P.
 
-A first approach made Client 2 erase `Generic` locally and send its update. But Clients 1 and 3 kept training normally. Their data contains no `Generic` samples, yet **their gradients were enough to rebuild the class patterns in the shared layers**:
-
-> 📉 After one round, `Generic` recall climbed back to **~60%**. Unlearning carried by a single client does not hold in a federated system.
-
-**FedAF-P** (*Federated Active Forgetting, Persistent*) solves this by turning forgetting into a constraint enforced on **every client and on the server**.
-
----
-
-## 🌐 Federated setup
-
-```mermaid
-flowchart TB
-    S["🖥️ Server<br/>FedAvg aggregation"]
-    B(("MQTT broker"))
-    C1["📡 Client 1<br/>Fuzzers · DoS · Reconnaissance"]
-    C2["📡 Client 2<br/>Generic · Backdoor · Worms"]
-    C3["📡 Client 3<br/>Exploits · Analysis · Shellcode"]
-    S <--> B
-    B <--> C1
-    B <--> C2
-    B <--> C3
-```
-
-All clients also share one third of the `Normal` traffic. Each client simulates a specialised, heterogeneous IoT sensor (**non-IID**).
-
-| Component | Details |
-|---|---|
-| **Model** | MLP `42 → 256 → 128 → 64 → 10`, BatchNorm1d, Dropout 0.3 |
-| **Normalisation (FedNorm)** | Shared global scaler (mean / variance), computed once and sent to every client |
-| **Local optimisation** | AdamW, LR 5e-4, weight decay 1e-4, batch 512, 3 epochs per round |
-| **Drift control (FedProx)** | Proximal penalty μ = 0.1 between the local and global models |
-| **Loss** | Focal loss γ = 2.0 with class weights 1/√N, to focus on rare attacks |
-| **Aggregation** | FedAvg (arithmetic mean), communication over **MQTT** with pickle serialisation |
-| **Training** | More than 300 rounds until convergence |
+| Class | Client 1<br/>precision | Client 1<br/>recall | Client 2<br/>precision | Client 2<br/>recall | Client 3<br/>precision | Client 3<br/>recall |
+|---|---|---|---|---|---|---|
+| Analysis | 0.000 | 0.000 | 0.000 | 0.000 | 0.020 | 0.894 |
+| Backdoor | 0.000 | 0.000 | 0.020 | 0.930 | 0.000 | 0.000 |
+| DoS | 0.154 | 0.727 | 0.025 | 0.009 | 0.240 | 0.008 |
+| Exploits | 0.824 | 0.354 | 0.848 | 0.214 | 0.722 | 0.485 |
+| Fuzzers | 0.145 | 0.624 | 0.002 | 0.003 | 0.252 | 0.154 |
+| **Generic** 🎯 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+| Normal | 0.955 | 0.575 | 0.861 | 0.755 | 0.927 | 0.646 |
+| Reconnaissance | 0.361 | 0.754 | 0.005 | 0.001 | 0.340 | 0.050 |
+| Shellcode | 0.255 | 0.109 | 0.000 | 0.000 | 0.025 | 0.979 |
+| Worms | 0.208 | 0.114 | 0.005 | 0.864 | 0.000 | 0.000 |
 
 ---
 
 ## 🛡️ FedAF-P: three layers of protection
+
+FedAF-P combines a local unlearning step with three protection layers that stop the other clients from re-learning the forgotten class.
+
+| Step | Where | Mechanism | Settings |
+|---|---|---|---|
+| ① **Local unlearning** | Client 2, round 1 | Distillation from a frozen teacher on the 9 retained classes + uniform target on `Generic` + EWC | EWC γ = 35, LR 3e-5, 3 epochs |
+| ② **Forgetting direction** | Client 2 → all clients | Gradient ascent on `Generic` gives the direction `u` that would rebuild the class, broadcast over MQTT | `retain = True` |
+| 🧲 **Layer 1: alignment penalty** | Every client | Brakes local updates aligned with `u` (cosine similarity) | λ = 0.15, −3% per round, floor 0.02 |
+| 🧹 **Layer 2: projection filtering** | Server, before FedAvg | Removes the component of each update along `u`: `Δ − (Δ·u)u` | Every round |
+| 🔒 **Layer 3: output-neuron lock** | Server, after FedAvg | Pulls the `Generic` output weights toward zero | α = 0.95, −8% every 3 rounds, floor 0.30 |
 
 ```mermaid
 flowchart TB
@@ -139,82 +136,60 @@ After each aggregation, the weight vector of the `Generic` class in the final la
 
 ---
 
-## 📊 Results
+## 📌 Table of Contents
 
-### Before vs after unlearning
+- [The problem](#-the-problem)
+- [Federated setup](#-federated-setup)
+- [Dataset](#%EF%B8%8F-dataset)
+- [Repository structure](#-repository-structure)
+- [Getting started](#-getting-started)
+- [Open issues & roadmap](#%EF%B8%8F-open-issues--roadmap)
+- [References](#-references)
 
-FL results after more than 300 rounds, then FedAF-P after fewer than 10 rounds (α = 0.30). Each client is evaluated on its own local test set.
+---
 
-| Client | Generic F1<br/>before → after | Normal F1<br/>before → after | Macro F1, 9 retained classes<br/>before → after | Accuracy<br/>before → after |
-|---|---|---|---|---|
-| **Client 1** | 0.773 → **0.000** ✅ | 0.720 → 0.717 | 0.294 → 0.277 | 0.569 → 0.421 |
-| **Client 2** | 0.745 → **0.000** ✅ | 0.809 → 0.805 | 0.136 → 0.135 | 0.514 → 0.376 |
-| **Client 3** | 0.648 → **0.000** ✅ | 0.758 → 0.761 | 0.199 → 0.192 | 0.488 → 0.382 |
+## 🎯 The problem
 
-### How to read these results
+In **Federated Learning (FL)**, IoT clients train a shared intrusion-detection model without sharing their raw traffic. When a client asks for its data to be forgotten (GDPR *right to be forgotten*, poisoned data, a client leaving), retraining the global model from scratch is too expensive. **Federated Unlearning** removes that knowledge from the trained model instead.
 
-- ✅ **Forgetting is complete and persistent.** `Generic` precision, recall and F1 are all 0.000 on the 3 clients, on every round after unlearning.
-- ✅ **Retained knowledge is almost intact.** On the 9 other classes, macro F1 moves by −0.002 to −0.018, and `Normal` stays stable (F1 ≈ 0.72–0.81).
-- ℹ️ **The accuracy drop is expected.** `Generic` samples, which the model is now designed not to recognise, are counted as errors in the test sets.
-- ℹ️ **Client 2's overall macro F1 drops from 0.197 to 0.121** because `Generic` made up 66% of its local data. Excluding the forgotten class, its macro F1 is unchanged (0.136 → 0.135).
-- ⚠️ **Rare classes** (Analysis, Backdoor, Worms, Shellcode: under 1% of the data) stay close to zero both before and after. This is a pre-existing data-distribution problem, independent of unlearning.
+Here, **Client 2 holds 100% of the `Generic` attack samples** and asks the federation to forget that class.
 
-<details>
-<summary><b>📋 Per-class results: Client 1</b></summary>
+### Why local unlearning alone fails
 
-| Class | F1 before | F1 after | Precision after | Recall after |
-|---|---|---|---|---|
-| Analysis | 0.000 | 0.000 | 0.000 | 0.000 |
-| Backdoor | 0.000 | 0.000 | 0.000 | 0.000 |
-| DoS | 0.278 | 0.254 | 0.154 | 0.727 |
-| Exploits | 0.507 | 0.495 | 0.824 | 0.354 |
-| Fuzzers | 0.337 | 0.235 | 0.145 | 0.624 |
-| **Generic** | **0.773** | **0.000** ✅ | 0.000 | 0.000 |
-| Normal | 0.720 | 0.717 | 0.955 | 0.575 |
-| Reconnaissance | 0.490 | 0.488 | 0.361 | 0.754 |
-| Shellcode | 0.151 | 0.152 | 0.255 | 0.109 |
-| Worms | 0.164 | 0.147 | 0.208 | 0.114 |
-| **Macro F1** | **0.342** | **0.249** | | |
+A first approach made Client 2 erase `Generic` locally and send its update. But Clients 1 and 3 kept training normally. Their data contains no `Generic` samples, yet **their gradients were enough to rebuild the class patterns in the shared layers**:
 
-</details>
+> 📉 After one round, `Generic` recall climbed back to **~60%**. Unlearning carried by a single client does not hold in a federated system.
 
-<details>
-<summary><b>📋 Per-class results: Client 2 (unlearning client)</b></summary>
+**FedAF-P** (*Federated Active Forgetting, Persistent*) solves this by turning forgetting into a constraint enforced on **every client and on the server**.
 
-| Class | F1 before | F1 after | Precision after | Recall after |
-|---|---|---|---|---|
-| Analysis | 0.000 | 0.000 | 0.000 | 0.000 |
-| Backdoor | 0.039 | 0.040 | 0.020 | 0.930 |
-| DoS | 0.015 | 0.014 | 0.025 | 0.009 |
-| Exploits | 0.335 | 0.342 | 0.848 | 0.214 |
-| Fuzzers | 0.009 | 0.003 | 0.002 | 0.003 |
-| **Generic** | **0.745** | **0.000** ✅ | 0.000 | 0.000 |
-| Normal | 0.809 | 0.805 | 0.861 | 0.755 |
-| Reconnaissance | 0.010 | 0.002 | 0.005 | 0.001 |
-| Shellcode | 0.000 | 0.000 | 0.000 | 0.000 |
-| Worms | 0.010 | 0.009 | 0.005 | 0.864 |
-| **Macro F1** | **0.197** | **0.121** | | |
+---
 
-</details>
+## 🌐 Federated setup
 
-<details>
-<summary><b>📋 Per-class results: Client 3</b></summary>
+```mermaid
+flowchart TB
+    S["🖥️ Server<br/>FedAvg aggregation"]
+    B(("MQTT broker"))
+    C1["📡 Client 1<br/>Fuzzers · DoS · Reconnaissance"]
+    C2["📡 Client 2<br/>Generic · Backdoor · Worms"]
+    C3["📡 Client 3<br/>Exploits · Analysis · Shellcode"]
+    S <--> B
+    B <--> C1
+    B <--> C2
+    B <--> C3
+```
 
-| Class | F1 before | F1 after | Precision after | Recall after |
-|---|---|---|---|---|
-| Analysis | 0.055 | 0.040 | 0.020 | 0.894 |
-| Backdoor | 0.000 | 0.000 | 0.000 | 0.000 |
-| DoS | 0.012 | 0.015 | 0.240 | 0.008 |
-| Exploits | 0.570 | 0.580 | 0.722 | 0.485 |
-| Fuzzers | 0.189 | 0.192 | 0.252 | 0.154 |
-| **Generic** | **0.648** | **0.000** ✅ | 0.000 | 0.000 |
-| Normal | 0.758 | 0.761 | 0.927 | 0.646 |
-| Reconnaissance | 0.128 | 0.087 | 0.340 | 0.050 |
-| Shellcode | 0.047 | 0.049 | 0.025 | 0.979 |
-| Worms | 0.035 | 0.000 | 0.000 | 0.000 |
-| **Macro F1** | **0.244** | **0.172** | | |
+All clients also share one third of the `Normal` traffic. Each client simulates a specialised, heterogeneous IoT sensor (**non-IID**).
 
-</details>
+| Component | Details |
+|---|---|
+| **Model** | MLP `42 → 256 → 128 → 64 → 10`, BatchNorm1d, Dropout 0.3 |
+| **Normalisation (FedNorm)** | Shared global scaler (mean / variance), computed once and sent to every client |
+| **Local optimisation** | AdamW, LR 5e-4, weight decay 1e-4, batch 512, 3 epochs per round |
+| **Drift control (FedProx)** | Proximal penalty μ = 0.1 between the local and global models |
+| **Loss** | Focal loss γ = 2.0 with class weights 1/√N, to focus on rare attacks |
+| **Aggregation** | FedAvg (arithmetic mean), communication over **MQTT** with pickle serialisation |
+| **Training** | More than 300 rounds until convergence |
 
 ---
 
