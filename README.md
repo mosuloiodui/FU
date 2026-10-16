@@ -90,14 +90,14 @@ All clients also share one third of the `Normal` traffic. Each client simulates 
 ## 🛡️ FedAF-P: three layers of protection
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph R1["Round 1 · Client 2"]
-        direction TB
+        direction LR
         A["Local unlearning<br/>distillation + uniform target + EWC"] --> D["Forgetting direction u<br/>(gradient ascent on Generic)"]
     end
     D -- "broadcast over MQTT<br/>(retain = True)" --> L1
     subgraph RN["Every following round"]
-        direction TB
+        direction LR
         L1["🧲 Layer 1 · Clients<br/>alignment penalty"] --> L2["🧹 Layer 2 · Server<br/>projection filtering"] --> L3["🔒 Layer 3 · Server<br/>output-neuron lock"]
     end
     L3 --> G["✅ Global model<br/>Generic forgotten"]
