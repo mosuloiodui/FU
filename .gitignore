@@ -1,0 +1,11 @@
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+
+# Data and checkpoints (regenerated from UNSW-NB15)
+*.csv
+*.pth
+*.pkl
