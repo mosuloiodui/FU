@@ -191,6 +191,26 @@ All clients also share one third of the `Normal` traffic. Each client simulates 
 | **Aggregation** | FedAvg (arithmetic mean), communication over **MQTT** with pickle serialisation |
 | **Training** | More than 300 rounds until convergence |
 
+### Deployment: 1 server + 3 Linux VMs over MQTT
+
+The system runs on **4 machines**: a central server that also hosts the **Mosquitto** broker, and **3 Linux virtual machines**, one per client. They only exchange model weights, scaler statistics and the forgetting direction, never raw traffic.
+
+| Machine | Script | Role |
+|---|---|---|
+| Central server + broker | [`server/server_fedavg.py`](server/server_fedavg.py) | Phase 1: FedNorm + FedAvg, saves a checkpoint every round |
+| Central server + broker | [`server/server_fedaf_p.py`](server/server_fedaf_p.py) | Phase 2: resumes the checkpoint, adds layer 2 (projection) and layer 3 (neuron lock) |
+| VM 1 (`client_0`) and VM 3 (`client_2`) | [`clients/client.py`](clients/client.py) | FedProx + focal loss client |
+| VM 2 (`client_1`) | [`clients/client_fedaf_p.py`](clients/client_fedaf_p.py) | Same client + local unlearning on its first round, forgetting direction `u`, layer 1 (alignment penalty) |
+
+| MQTT topic | Direction | Payload |
+|---|---|---|
+| `client/scaler_stats/<id>` | client → server | Local mean / variance / sample count |
+| `server/global_scaler` | server → clients | Federated scaler (retained) |
+| `client/ready/<id>` | client → server | DataLoaders ready |
+| `server/global` | server → clients | Global model weights, starts a round |
+| `client/update/<id>` | client → server | Local weights + metrics (+ direction `u` on the unlearning round) |
+| `server/unlearn_signal` | server → clients | Forgetting direction `u` (retained) |
+
 ---
 
 ## 🗂️ Dataset
@@ -228,15 +248,25 @@ Each client also receives about 18,666 `Normal` samples.
 
 ```
 .
-├── prepro.ipynb                         # Data analysis + non-IID split (client train/test CSVs)
-├── pretraitement.ipynb                  # Earlier version of the preprocessing (train split only)
-├── Résultats_par_client_avant_FL.ipynb  # Local baseline of each client before federation
-├── FedAF.ipynb                          # Standalone prototype of the local unlearning step (Colab)
+├── server/
+│   ├── server_fedavg.py                     # Phase 1: FedNorm + FedAvg over MQTT, checkpoint every round
+│   └── server_fedaf_p.py                    # Phase 2: FedAvg + projection filtering + output-neuron lock
+├── clients/
+│   ├── client.py                            # FedProx + focal loss client (VM 1 and VM 3)
+│   └── client_fedaf_p.py                    # Unlearning client (VM 2): distillation + EWC, direction u, alignment penalty
+├── notebooks/
+│   ├── prepro.ipynb                         # Data analysis + non-IID split (client train/test CSVs)
+│   ├── pretraitement.ipynb                  # Earlier version of the preprocessing (train split only)
+│   ├── Résultats_par_client_avant_FL.ipynb  # Local baseline of each client before federation
+│   └── FedAF.ipynb                          # Standalone prototype of the local unlearning step (Colab)
+├── data/README.md                           # Where to put the CSV files (not versioned)
+├── assets/                                  # Result charts
+├── .env.example                             # MQTT broker address
 ├── requirements.txt
 └── README.md
 ```
 
-> 📝 In the notebooks, clients are numbered `client_0`, `client_1` and `client_2`. They match Clients 1, 2 and 3 in this README.
+> 📝 In the code and the notebooks, clients are numbered `client_0`, `client_1` and `client_2`. They match Clients 1, 2 and 3 in this README.
 
 ### About `FedAF.ipynb`
 
@@ -248,16 +278,73 @@ On its own, it already drives `Generic` recall from **0.99 to 0.03**. It was thi
 
 ## 🚀 Getting started
 
-1. Download `UNSW_NB15_training-set.csv` and `UNSW_NB15_testing-set.csv` from the [official UNSW-NB15 page](https://research.unsw.edu.au/projects/unsw-nb15-dataset).
+### 1. Data and dependencies (every machine)
+
+1. Download `UNSW_NB15_training-set.csv` and `UNSW_NB15_testing-set.csv` from the [official UNSW-NB15 page](https://research.unsw.edu.au/projects/unsw-nb15-dataset) into `data/`.
 2. Install the dependencies:
 
    ```bash
+   python3 -m venv env
+   source env/bin/activate
    pip install -r requirements.txt
    ```
 
-3. Run `prepro.ipynb` to generate `client_{0,1,2}_train.csv`, `test_{0,1,2}.csv` and `global_test.csv`.
-4. Run `Résultats_par_client_avant_FL.ipynb` for the local baselines.
-5. For `FedAF.ipynb`, upload the global checkpoint (`global_checkpoint.pth`), the federated scaler (`federated_scaler.pkl`), `client_1_multiclass_train.csv` and `global_test_multiclass.csv` into the Colab session.
+3. Run [`notebooks/prepro.ipynb`](notebooks/prepro.ipynb) to generate `client_{0,1,2}_train.csv`, `test_{0,1,2}.csv` and `global_test.csv`, then copy each VM's two files into its `data/` folder (see [`data/README.md`](data/README.md)).
+
+### 2. MQTT broker (central server)
+
+Install [Mosquitto](https://mosquitto.org/download/) and let it listen on the network, for example with this `mosquitto.conf` on an isolated lab network:
+
+```text
+listener 1883
+allow_anonymous true
+```
+
+On every machine, point the scripts at the broker (default `localhost`, see [`.env.example`](.env.example)):
+
+```bash
+export MQTT_BROKER=<server-ip>
+export MQTT_PORT=1883
+```
+
+### 3. Phase 1: federated training (FedAvg + FedProx)
+
+Run every command from the repository root. Start the server first, then one client per VM:
+
+```bash
+# Central server
+python3 server/server_fedavg.py
+
+# VM 1, VM 2, VM 3
+python3 clients/client.py 0 data/client_0_train.csv data/test_0.csv
+python3 clients/client.py 1 data/client_1_train.csv data/test_1.csv
+python3 clients/client.py 2 data/client_2_train.csv data/test_2.csv
+```
+
+The server waits for the 3 clients, builds the federated scaler, then runs the rounds. It saves `global_checkpoint.pth` and `federated_scaler.pkl` every round and resumes from them after a restart. Delete both files to start from scratch.
+
+### 4. Phase 2: FedAF-P unlearning of `Generic`
+
+Stop the processes once the model has converged (more than 300 rounds), then restart with the FedAF-P scripts. The server resumes the phase 1 checkpoint; VM 2 runs the local unlearning step on the first round it receives:
+
+```bash
+# Central server
+python3 server/server_fedaf_p.py
+
+# VM 2: the client that asks to forget Generic
+python3 clients/client_fedaf_p.py 1 data/client_1_train.csv data/test_1.csv
+
+# VM 1 and VM 3: unchanged
+python3 clients/client.py 0 data/client_0_train.csv data/test_0.csv
+python3 clients/client.py 2 data/client_2_train.csv data/test_2.csv
+```
+
+After the unlearning round the server also saves `unlearn_direction.pkl`, broadcasts `u` on `server/unlearn_signal` and applies layers 2 and 3 on every following round.
+
+### 5. Notebooks
+
+- [`notebooks/Résultats_par_client_avant_FL.ipynb`](notebooks/Résultats_par_client_avant_FL.ipynb) gives the local baselines.
+- For [`notebooks/FedAF.ipynb`](notebooks/FedAF.ipynb), upload the global checkpoint (`global_checkpoint.pth`), the federated scaler (`federated_scaler.pkl`), `client_1_multiclass_train.csv` and `global_test_multiclass.csv` into the Colab session.
 
 ---
 
@@ -267,7 +354,6 @@ On its own, it already drives `Generic` recall from **0.99 to 0.03**. It was thi
 - [ ] **Stabilise Client 2 after forgetting.** Its local model loses 66% of its data structure. A reduced learning rate (1e-5) for 5 rounds after unlearning would allow a gradual recovery.
 - [ ] **Add server-side evaluation.** Metrics are currently computed by each client on its own test set. A neutral test set on the server would give the true health of the aggregated global model.
 - [ ] **Improve rare classes** (Analysis, Backdoor, Worms, Shellcode), independently of unlearning.
-- [ ] Publish the MQTT server and client code of the federated system in this repository.
 - [ ] Compare with retraining from scratch without `Generic` (the gold standard), and add a membership-inference audit.
 
 ---

@@ -1,11 +1,33 @@
-.ipynb_checkpoints/
+# Python
 __pycache__/
 *.pyc
-.env
-.venv/
-venv/
+.ipynb_checkpoints/
 
-# Data and checkpoints (regenerated from UNSW-NB15)
+# Virtual environments
+env/
+venv/
+.venv/
+
+# Secrets and local configuration (MQTT broker address, credentials)
+.env
+*.env
+!.env.example
+mosquitto.conf
+*.passwd
+passwordfile
+
+# Data (UNSW-NB15 and per-client partitions, see data/README.md)
 *.csv
+data/*
+!data/README.md
+
+# Checkpoints and state generated during training
 *.pth
+*.pt
 *.pkl
+
+# MQTT broker (installed separately)
+mosquitto*/
+
+# Logs
+*.log
